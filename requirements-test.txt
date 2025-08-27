@@ -1,0 +1,3 @@
+pytest>=7.0.0
+peewee>=3.17.0
+redislite>=6.0.0
