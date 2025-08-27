@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+import peewee
 from peewee import (
     Model, SqliteDatabase, CharField, IntegerField, TextField,
     BooleanField, ForeignKeyField, DateTimeField, fn
@@ -161,3 +162,131 @@ def close_database() -> None:
     """Close the database connection."""
     if not database.is_closed():
         database.close()
+
+
+def fetch_unmatched_torrents() -> List[Dict[str, Any]]:
+    """Fetch all torrents that have no matches."""
+    # Get all torrents that don't have any matches
+    matched_torrent_ids = Match.select(Match.torrent).distinct()
+    query = (Torrent
+             .select()
+             .where(Torrent.id.not_in(matched_torrent_ids))
+             .order_by(Torrent.added_ts.desc()))
+    
+    results = []
+    for torrent in query:
+        results.append({
+            'info_hash': torrent.info_hash,
+            'torrent_path': torrent.torrent_path,
+            'name': torrent.name,
+            'is_multi': torrent.is_multi,
+            'total_length': torrent.total_length,
+            'created_unix': torrent.created_unix,
+            'added_ts': torrent.added_ts,
+        })
+    
+    return results
+
+
+def fetch_matched_torrents() -> List[Dict[str, Any]]:
+    """Fetch all torrents that have at least one match."""
+    query = (Torrent
+             .select()
+             .join(Match)
+             .distinct()
+             .order_by(Torrent.added_ts.desc()))
+    
+    results = []
+    for torrent in query:
+        results.append({
+            'info_hash': torrent.info_hash,
+            'torrent_path': torrent.torrent_path,
+            'name': torrent.name,
+            'is_multi': torrent.is_multi,
+            'total_length': torrent.total_length,
+            'match_count': torrent.matches.count(),
+        })
+    
+    return results
+
+
+def get_data_paths_for_torrent(torrent_identifier: str) -> List[str]:
+    """
+    Get data paths for a torrent by info_hash or torrent_path.
+    
+    Args:
+        torrent_identifier: Either a 40-char info_hash or path to .torrent file
+        
+    Returns:
+        List of data paths that match this torrent
+    """
+    # Determine if identifier is info_hash or path
+    if len(torrent_identifier) == 40 and all(c in '0123456789abcdef' for c in torrent_identifier.lower()):
+        # Looks like info_hash
+        torrent = get_torrent_by_info_hash(torrent_identifier)
+    else:
+        # Treat as path
+        torrent_path = str(Path(torrent_identifier).resolve())
+        try:
+            torrent = Torrent.get(Torrent.torrent_path == torrent_path)
+        except Torrent.DoesNotExist:
+            torrent = None
+    
+    if not torrent:
+        return []
+    
+    return [match.data_path for match in torrent.matches]
+
+
+def get_torrent_for_data_path(data_path: str) -> Optional[Dict[str, Any]]:
+    """
+    Get torrent info for a given data path.
+    
+    Args:
+        data_path: Path to data directory or file
+        
+    Returns:
+        Dictionary with torrent info or None if no match
+    """
+    resolved_path = str(Path(data_path).resolve())
+    
+    try:
+        match = Match.get(Match.data_path == resolved_path)
+        torrent = match.torrent
+        
+        return {
+            'info_hash': torrent.info_hash,
+            'torrent_path': torrent.torrent_path,
+            'name': torrent.name,
+            'is_multi': torrent.is_multi,
+            'total_length': torrent.total_length,
+        }
+    except Match.DoesNotExist:
+        return None
+
+
+def get_all_matches_dict() -> Dict[str, Dict[str, Any]]:
+    """
+    Get dictionary of all matched torrents with their data paths.
+    
+    Returns:
+        Dict mapping info_hash -> {torrent_info, data_paths: [...]}
+    """
+    result = {}
+    
+    query = (Torrent
+             .select()
+             .join(Match)
+             .distinct())
+    
+    for torrent in query:
+        data_paths = [match.data_path for match in torrent.matches]
+        result[torrent.info_hash] = {
+            'torrent_path': torrent.torrent_path,
+            'name': torrent.name,
+            'is_multi': torrent.is_multi,
+            'total_length': torrent.total_length,
+            'data_paths': data_paths,
+        }
+    
+    return result

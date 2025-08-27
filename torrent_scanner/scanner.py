@@ -184,7 +184,7 @@ def get_info(db_path: Path) -> dict:
         close_database()
 
 
-def scan_torrents(cfg: ScanConfig) -> None:
+def scan_torrents(cfg: ScanConfig, _skip_init: bool = False, _rds=None) -> None:
     """
     Scan for .torrent files and ingest them into the database.
     
@@ -193,9 +193,11 @@ def scan_torrents(cfg: ScanConfig) -> None:
     2) Parses them and extracts metadata
     3) Saves new torrents to the database and indexes them in Redis
     """
-    # Initialize database
-    init_database(cfg.db_path)
-    rds = get_redis(str(cfg.redis_path))
+    # Initialize database (unless already done)
+    if not _skip_init:
+        init_database(cfg.db_path)
+    # Use provided Redis connection or create new one
+    rds = _rds if _rds is not None else get_redis(str(cfg.redis_path))
 
     def progress(message: str, current: int, total: int):
         if cfg.progress_callback:
@@ -238,15 +240,16 @@ def scan_torrents(cfg: ScanConfig) -> None:
         progress(f"Torrent scan complete - {processed} processed, {new_torrents} new", 1, 1)
 
     finally:
-        # Cleanup
-        try:
-            rds.close()
-        except Exception:
-            pass
-        close_database()
+        # Cleanup (only if we created our own Redis connection)
+        if _rds is None:
+            try:
+                rds.close()
+            except Exception:
+                pass
+            close_database()
 
 
-def scan_files(cfg: ScanConfig) -> None:
+def scan_files(cfg: ScanConfig, _skip_init: bool = False, _rds=None) -> None:
     """
     Scan for data files that match existing torrents in the database.
     
@@ -255,9 +258,11 @@ def scan_files(cfg: ScanConfig) -> None:
     2) Records matches between torrents and filesystem data
     3) Writes JSONL output if requested
     """
-    # Initialize database
-    init_database(cfg.db_path)
-    rds = get_redis(str(cfg.redis_path))
+    # Initialize database (unless already done)
+    if not _skip_init:
+        init_database(cfg.db_path)
+    # Use provided Redis connection or create new one
+    rds = _rds if _rds is not None else get_redis(str(cfg.redis_path))
 
     def progress(message: str, current: int, total: int):
         if cfg.progress_callback:
@@ -339,12 +344,13 @@ def scan_files(cfg: ScanConfig) -> None:
         progress(f"File scan complete - {match_count} total matches found", 1, 1)
 
     finally:
-        # Cleanup
-        try:
-            rds.close()
-        except Exception:
-            pass
-        close_database()
+        # Cleanup (only if we created our own Redis connection)
+        if _rds is None:
+            try:
+                rds.close()
+            except Exception:
+                pass
+            close_database()
 
 
 def scan(cfg: ScanConfig) -> None:
@@ -355,6 +361,18 @@ def scan(cfg: ScanConfig) -> None:
     2) Scan all directories for data matches against existing torrents.
     3) Write JSONL of matches if cfg.matches_jsonl is provided.
     """
-    # Run both phases of scanning
-    scan_torrents(cfg)
-    scan_files(cfg)
+    # Initialize database and Redis once for both phases
+    init_database(cfg.db_path)
+    rds = get_redis(str(cfg.redis_path))
+    
+    try:
+        # Run both phases of scanning (with shared resources)
+        scan_torrents(cfg, _skip_init=True, _rds=rds)
+        scan_files(cfg, _skip_init=True, _rds=rds)
+    finally:
+        # Clean up shared resources
+        try:
+            rds.close()
+        except Exception:
+            pass
+        close_database()

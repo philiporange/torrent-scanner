@@ -2,7 +2,11 @@
 torrent_scanner - A utility to index .torrent files and match on-disk data.
 """
 
-from .models import Torrent, TorrentFile, Match, clean_database
+from .models import (
+    Torrent, TorrentFile, Match, clean_database,
+    fetch_unmatched_torrents, fetch_matched_torrents, get_data_paths_for_torrent,
+    get_torrent_for_data_path, get_all_matches_dict
+)
 from .bencode import BencodeError, bdecode_with_info_span
 from .torrent import TorrentMeta, parse_torrent
 from .filesystem import iter_torrent_files, compute_structure_hash_for_dir, compute_name_hash_for_file
@@ -14,6 +18,8 @@ __author__ = "Philip Orange <git@philiporange.com>"
 
 __all__ = [
     'Torrent', 'TorrentFile', 'Match', 'clean_database',
+    'fetch_unmatched_torrents', 'fetch_matched_torrents', 'get_data_paths_for_torrent',
+    'get_torrent_for_data_path', 'get_all_matches_dict',
     'BencodeError', 'bdecode_with_info_span',
     'TorrentMeta', 'parse_torrent',
     'iter_torrent_files', 'compute_structure_hash_for_dir', 'compute_name_hash_for_file',
