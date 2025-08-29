@@ -184,7 +184,7 @@ def get_info(db_path: Path) -> dict:
         close_database()
 
 
-def scan_torrents(cfg: ScanConfig, _skip_init: bool = False, _rds=None) -> None:
+def scan_torrents(cfg: ScanConfig, _skip_init: bool = False, _rds=None) -> dict:
     """
     Scan for .torrent files and ingest them into the database.
     
@@ -239,6 +239,11 @@ def scan_torrents(cfg: ScanConfig, _skip_init: bool = False, _rds=None) -> None:
 
         progress(f"Torrent scan complete - {processed} processed, {new_torrents} new", 1, 1)
 
+        return {
+            'processed': processed,
+            'new': new_torrents
+        }
+
     finally:
         # Cleanup (only if we created our own Redis connection)
         if _rds is None:
@@ -286,7 +291,17 @@ def scan_files(cfg: ScanConfig, _skip_init: bool = False, _rds=None) -> None:
         progress("Checking directories for matches", 0, len(directories_list))
         
         for i, directory in enumerate(directories_list, 1):
-            dir_name = directory.name[:40] + "..." if len(directory.name) > 43 else directory.name
+            # Handle invalid UTF-8 characters in directory names
+            try:
+                raw_name = directory.name
+                # Try to encode/decode to catch surrogate characters
+                raw_name.encode('utf-8')
+                dir_name = raw_name
+            except UnicodeEncodeError:
+                # Replace invalid characters with safe alternatives
+                dir_name = directory.name.encode('utf-8', errors='replace').decode('utf-8')
+            
+            dir_name = dir_name[:40] + "..." if len(dir_name) > 43 else dir_name
             dir_name = dir_name.ljust(43)
             progress(f"Checking {dir_name} ({matches_found} matches)", i, len(directories_list))
             
@@ -353,7 +368,7 @@ def scan_files(cfg: ScanConfig, _skip_init: bool = False, _rds=None) -> None:
             close_database()
 
 
-def scan(cfg: ScanConfig) -> None:
+def scan(cfg: ScanConfig) -> dict:
     """
     Main scan function that combines torrent and file scanning.
 
@@ -367,8 +382,9 @@ def scan(cfg: ScanConfig) -> None:
     
     try:
         # Run both phases of scanning (with shared resources)
-        scan_torrents(cfg, _skip_init=True, _rds=rds)
+        torrent_stats = scan_torrents(cfg, _skip_init=True, _rds=rds)
         scan_files(cfg, _skip_init=True, _rds=rds)
+        return torrent_stats  # Return torrent indexing stats
     finally:
         # Clean up shared resources
         try:

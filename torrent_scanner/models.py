@@ -290,3 +290,33 @@ def get_all_matches_dict() -> Dict[str, Dict[str, Any]]:
         }
     
     return result
+
+
+def fetch_all_torrents() -> List[Dict[str, Any]]:
+    """
+    Fetch all torrents in the database (both matched and unmatched).
+    
+    Returns:
+        List of torrent dictionaries with basic metadata
+    """
+    query = (Torrent
+             .select()
+             .order_by(Torrent.added_ts.desc()))
+    
+    results = []
+    for torrent in query:
+        match_count = torrent.matches.count()
+        results.append({
+            'info_hash': torrent.info_hash,
+            'torrent_path': torrent.torrent_path,
+            'name': torrent.name,
+            'is_multi': torrent.is_multi,
+            'total_length': torrent.total_length,
+            'created_unix': torrent.created_unix,
+            'created_by': torrent.created_by,
+            'comment': torrent.comment,
+            'added_ts': torrent.added_ts,
+            'match_count': match_count,
+        })
+    
+    return results

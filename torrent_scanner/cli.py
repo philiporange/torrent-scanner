@@ -1,25 +1,24 @@
 """
 Command line interface for the torrent scanner.
-Handles argument parsing and command execution.
+
+This module provides an improved CLI with clear separation of concerns and consistent
+command structure. Commands are organized into logical groups with intuitive naming.
 """
 
 import argparse
+import csv
 import json
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 try:
     from tqdm import tqdm
 except ImportError:
     tqdm = None
 
-from .models import (
-    init_database, close_database, fetch_all_matches, clean_database,
-    fetch_unmatched_torrents, fetch_matched_torrents, get_data_paths_for_torrent,
-    get_torrent_for_data_path, get_all_matches_dict
-)
-from .scanner import ScanConfig, scan, scan_torrents, scan_files, get_info
+from .api import TorrentScanner, database_session
+from .models import clean_database
 
 
 def _get_progress_callback(args):
@@ -68,399 +67,428 @@ def _get_progress_callback(args):
     return progress_callback, lambda: current_pbar.close() if current_pbar else None
 
 
-def cmd_scan(args: argparse.Namespace) -> None:
-    """Handle the scan command."""
-    db_path = Path(args.db) if args.db else Path.home() / ".torrent_scanner" / "torrents.db"
-    redis_path = Path(args.redis) if args.redis else Path.home() / ".torrent_scanner" / "redis.db"
-    
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    redis_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    progress_callback, cleanup_progress = _get_progress_callback(args)
-    
-    cfg = ScanConfig(
-        db_path=db_path,
-        redis_path=redis_path,
-        directories=[Path(d) for d in args.directories],
-        matches_jsonl=Path(args.matches_jsonl).resolve() if args.matches_jsonl else None,
-        progress_callback=progress_callback,
-    )
-    
-    try:
-        scan(cfg)
-    except ImportError as e:
-        if "redislite" in str(e):
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
-        else:
-            raise
-    finally:
-        cleanup_progress()
+def _get_scanner(args) -> TorrentScanner:
+    """Create a TorrentScanner instance from command line arguments."""
+    db_path = Path(args.db) if args.db else None
+    redis_path = Path(args.redis) if args.redis else None
+    return TorrentScanner(db_path=db_path, redis_path=redis_path)
 
 
-def cmd_torrents(args: argparse.Namespace) -> None:
-    """Handle the torrents command."""
-    db_path = Path(args.db) if args.db else Path.home() / ".torrent_scanner" / "torrents.db"
-    redis_path = Path(args.redis) if args.redis else Path.home() / ".torrent_scanner" / "redis.db"
-    
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    redis_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    progress_callback, cleanup_progress = _get_progress_callback(args)
-    
-    cfg = ScanConfig(
-        db_path=db_path,
-        redis_path=redis_path,
-        directories=[Path(d) for d in args.directories],
-        progress_callback=progress_callback,
-    )
-    
-    try:
-        scan_torrents(cfg)
-    except ImportError as e:
-        if "redislite" in str(e):
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
-        else:
-            raise
-    finally:
-        cleanup_progress()
+def _write_output(content: str, output_path: Optional[str]) -> None:
+    """Write content to file or stdout."""
+    if output_path:
+        with Path(output_path).open('w', encoding='utf-8') as f:
+            f.write(content)
+    else:
+        print(content)
 
 
-def cmd_files(args: argparse.Namespace) -> None:
-    """Handle the files command."""
-    db_path = Path(args.db) if args.db else Path.home() / ".torrent_scanner" / "torrents.db"
-    redis_path = Path(args.redis) if args.redis else Path.home() / ".torrent_scanner" / "redis.db"
-    
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    redis_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    progress_callback, cleanup_progress = _get_progress_callback(args)
-    
-    cfg = ScanConfig(
-        db_path=db_path,
-        redis_path=redis_path,
-        directories=[Path(d) for d in args.directories],
-        matches_jsonl=Path(args.matches_jsonl).resolve() if args.matches_jsonl else None,
-        progress_callback=progress_callback,
-    )
-    
-    try:
-        scan_files(cfg)
-    except ImportError as e:
-        if "redislite" in str(e):
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
-        else:
-            raise
-    finally:
-        cleanup_progress()
-
-
-def cmd_list_matches(args: argparse.Namespace) -> None:
-    """Handle the list-matches command."""
-    db_path = Path(args.db) if args.db else Path.home() / ".torrent_scanner" / "torrents.db"
-    
-    init_database(db_path)
-    try:
-        rows = fetch_all_matches()
-        if args.jsonl:
-            with Path(args.jsonl).open("w", encoding="utf-8") as f:
-                for r in rows:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        else:
-            for r in rows:
-                print(json.dumps(r, ensure_ascii=False))
-    finally:
-        close_database()
-
-
-def cmd_info(args: argparse.Namespace) -> None:
-    """Handle the info command."""
-    db_path = Path(args.db) if args.db else Path.home() / ".torrent_scanner" / "torrents.db"
-    
-    if not db_path.exists():
-        print(f"Database {db_path} does not exist")
+def _print_table(data: List[Dict[str, Any]], headers: List[str], widths: List[int]) -> None:
+    """Print data as a formatted table."""
+    if not data:
+        print("No results found")
         return
     
+    # Print header
+    header_line = " ".join(h.ljust(w) for h, w in zip(headers, widths))
+    print(header_line)
+    print("-" * len(header_line))
+    
+    # Print rows
+    for row in data:
+        values = []
+        for i, header in enumerate(headers):
+            key = header.lower().replace(' ', '_')
+            value = str(row.get(key, ''))
+            if len(value) > widths[i]:
+                value = value[:widths[i]-3] + "..."
+            values.append(value.ljust(widths[i]))
+        print(" ".join(values))
+
+
+# --- Indexing Commands ---
+
+def cmd_index(args: argparse.Namespace) -> None:
+    """Index torrent files into database."""
+    scanner = _get_scanner(args)
+    directories = [Path(d) for d in args.paths]
+    
     try:
-        info = get_info(db_path)
-        if args.json:
-            print(json.dumps(info, ensure_ascii=False))
-        else:
-            print(f"Torrent Scanner Database Info:")
-            print(f"  Database path: {db_path}")
-            print(f"  Total torrents indexed: {info['total_torrents']}")
-            print(f"  Matched torrents: {info['matched_torrents']}")
-            print(f"  Unmatched torrents: {info['unmatched_torrents']}")
-            print(f"  Total matches: {info['total_matches']}")
-            print(f"  Single-file torrents: {info['single_file_torrents']}")
-            print(f"  Multi-file torrents: {info['multi_file_torrents']}")
-            
-            # Format size in human-readable format
-            size_bytes = info['total_size_bytes']
-            if size_bytes >= 1024**4:
-                size_str = f"{size_bytes / (1024**4):.1f} TB"
-            elif size_bytes >= 1024**3:
-                size_str = f"{size_bytes / (1024**3):.1f} GB"
-            elif size_bytes >= 1024**2:
-                size_str = f"{size_bytes / (1024**2):.1f} MB"
-            elif size_bytes >= 1024:
-                size_str = f"{size_bytes / 1024:.1f} KB"
-            else:
-                size_str = f"{size_bytes} bytes"
-            
-            print(f"  Total size: {size_str}")
-    except Exception as e:
-        print(f"Error getting info: {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-def cmd_clean(args: argparse.Namespace) -> None:
-    """Handle the clean command."""
-    db_path = Path(args.db) if args.db else Path.home() / ".torrent_scanner" / "torrents.db"
-    redis_path = Path(args.redis) if args.redis else Path.home() / ".torrent_scanner" / "redis.db"
-    
-    if not db_path.exists():
-        print(f"Database {db_path} does not exist")
-        return
-    
-    init_database(db_path)
-    try:
-        clean_database()
-        print(f"Database {db_path} has been reset")
-    finally:
-        close_database()
-    
-    if redis_path.exists():
-        redis_path.unlink()
-        print(f"Redis database {redis_path} has been deleted")
-
-
-def cmd_list_unmatched(args: argparse.Namespace) -> None:
-    """Handle the list-unmatched command."""
-    db_path = Path(args.db) if args.db else Path.home() / ".torrent_scanner" / "torrents.db"
-    
-    if not db_path.exists():
-        print(f"Database {db_path} does not exist", file=sys.stderr)
-        sys.exit(1)
-    
-    init_database(db_path)
-    try:
-        torrents = fetch_unmatched_torrents()
-        
-        if args.format == 'jsonl':
-            for t in torrents:
-                print(json.dumps(t, ensure_ascii=False))
-        elif args.format == 'json':
-            print(json.dumps(torrents, ensure_ascii=False, indent=2))
-        elif args.format == 'paths':
-            for t in torrents:
-                print(t['torrent_path'])
-        else:  # table format
-            if torrents:
-                print(f"{'Info Hash':<40} {'Name':<50} {'Path'}")
-                print("-" * 100)
-                for t in torrents:
-                    name = t['name'][:47] + "..." if len(t['name']) > 50 else t['name']
-                    print(f"{t['info_hash']:<40} {name:<50} {t['torrent_path']}")
-            else:
-                print("No unmatched torrents found")
-    finally:
-        close_database()
-
-
-def cmd_list_matched(args: argparse.Namespace) -> None:
-    """Handle the list-matched command."""
-    db_path = Path(args.db) if args.db else Path.home() / ".torrent_scanner" / "torrents.db"
-    
-    if not db_path.exists():
-        print(f"Database {db_path} does not exist", file=sys.stderr)
-        sys.exit(1)
-    
-    init_database(db_path)
-    try:
-        torrents = fetch_matched_torrents()
-        
-        if args.format == 'jsonl':
-            for t in torrents:
-                print(json.dumps(t, ensure_ascii=False))
-        elif args.format == 'json':
-            print(json.dumps(torrents, ensure_ascii=False, indent=2))
-        elif args.format == 'paths':
-            for t in torrents:
-                print(t['torrent_path'])
-        else:  # table format
-            if torrents:
-                print(f"{'Info Hash':<40} {'Matches':<8} {'Name':<42} {'Path'}")
-                print("-" * 100)
-                for t in torrents:
-                    name = t['name'][:39] + "..." if len(t['name']) > 42 else t['name']
-                    print(f"{t['info_hash']:<40} {t['match_count']:<8} {name:<42} {t['torrent_path']}")
-            else:
-                print("No matched torrents found")
-    finally:
-        close_database()
-
-
-def cmd_get_data(args: argparse.Namespace) -> None:
-    """Handle the get-data command."""
-    db_path = Path(args.db) if args.db else Path.home() / ".torrent_scanner" / "torrents.db"
-    
-    if not db_path.exists():
-        print(f"Database {db_path} does not exist", file=sys.stderr)
-        sys.exit(1)
-    
-    init_database(db_path)
-    try:
-        data_paths = get_data_paths_for_torrent(args.torrent)
-        
-        if args.format == 'json':
-            print(json.dumps(data_paths, ensure_ascii=False, indent=2))
-        else:  # line format
-            for path in data_paths:
-                print(path)
-            
-        if not data_paths and not args.quiet:
-            print("No data found for this torrent", file=sys.stderr)
-    finally:
-        close_database()
-
-
-def cmd_get_torrent(args: argparse.Namespace) -> None:
-    """Handle the get-torrent command."""
-    db_path = Path(args.db) if args.db else Path.home() / ".torrent_scanner" / "torrents.db"
-    
-    if not db_path.exists():
-        print(f"Database {db_path} does not exist", file=sys.stderr)
-        sys.exit(1)
-    
-    init_database(db_path)
-    try:
-        torrent_info = get_torrent_for_data_path(args.data_path)
-        
-        if torrent_info:
-            if args.format == 'json':
-                print(json.dumps(torrent_info, ensure_ascii=False, indent=2))
-            elif args.format == 'info-hash':
-                print(torrent_info['info_hash'])
-            elif args.format == 'path':
-                print(torrent_info['torrent_path'])
-            else:  # full format
-                print(f"Info Hash: {torrent_info['info_hash']}")
-                print(f"Torrent Path: {torrent_info['torrent_path']}")
-                print(f"Name: {torrent_info['name']}")
-                print(f"Multi-file: {torrent_info['is_multi']}")
-                print(f"Total Size: {torrent_info['total_length']} bytes")
-        else:
-            if not args.quiet:
-                print("No torrent found for this data path", file=sys.stderr)
+        results = scanner.index_torrents(directories, quiet=args.quiet)
+        if not args.quiet:
+            print(f"Processed {results.get('processed', 0)} torrents, {results.get('new', 0)} new")
+    except ImportError as e:
+        if "redislite" in str(e):
+            print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
-    finally:
-        close_database()
+        else:
+            raise
 
 
-def cmd_export_matches(args: argparse.Namespace) -> None:
-    """Handle the export-matches command."""
-    db_path = Path(args.db) if args.db else Path.home() / ".torrent_scanner" / "torrents.db"
+def cmd_match(args: argparse.Namespace) -> None:
+    """Find downloaded data for indexed torrents."""
+    scanner = _get_scanner(args)
+    directories = [Path(d) for d in args.paths]
     
-    if not db_path.exists():
-        print(f"Database {db_path} does not exist", file=sys.stderr)
-        sys.exit(1)
-    
-    init_database(db_path)
     try:
-        matches_dict = get_all_matches_dict()
+        matches = scanner.find_matches(directories, quiet=args.quiet)
+        if not args.quiet:
+            print(f"Found {len(matches)} matches")
         
         if args.output:
-            output_path = Path(args.output)
-            with output_path.open('w', encoding='utf-8') as f:
-                json.dump(matches_dict, f, ensure_ascii=False, indent=2)
-            print(f"Exported {len(matches_dict)} matched torrents to {output_path}")
+            if args.output.endswith('.jsonl'):
+                with Path(args.output).open('w', encoding='utf-8') as f:
+                    for match in matches:
+                        f.write(json.dumps(match, ensure_ascii=False) + '\n')
+            else:
+                with Path(args.output).open('w', encoding='utf-8') as f:
+                    json.dump(matches, f, ensure_ascii=False, indent=2)
+            if not args.quiet:
+                print(f"Exported matches to {args.output}")
+    except ImportError as e:
+        if "redislite" in str(e):
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
         else:
-            print(json.dumps(matches_dict, ensure_ascii=False, indent=2))
-    finally:
-        close_database()
+            raise
+
+
+def cmd_update(args: argparse.Namespace) -> None:
+    """Update database with torrents and matches."""
+    scanner = _get_scanner(args)
+    directories = [Path(d) for d in args.paths]
+    
+    try:
+        results = scanner.update(directories, quiet=args.quiet)
+        if not args.quiet:
+            indexed = results.get('indexed', {})
+            print(f"Indexed {indexed.get('new', 0)} new torrents")
+            print(f"Found {results.get('match_count', 0)} matches")
+        
+        if args.output:
+            matches = results.get('matches', [])
+            if args.output.endswith('.jsonl'):
+                with Path(args.output).open('w', encoding='utf-8') as f:
+                    for match in matches:
+                        f.write(json.dumps(match, ensure_ascii=False) + '\n')
+            else:
+                with Path(args.output).open('w', encoding='utf-8') as f:
+                    json.dump(matches, f, ensure_ascii=False, indent=2)
+            if not args.quiet:
+                print(f"Exported matches to {args.output}")
+    except ImportError as e:
+        if "redislite" in str(e):
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        else:
+            raise
+
+
+# --- Query Commands ---
+
+def cmd_check(args: argparse.Namespace) -> None:
+    """Check if torrent is downloaded."""
+    scanner = _get_scanner(args)
+    
+    if scanner.is_downloaded(args.torrent):
+        if args.verbose:
+            locations = scanner.get_data_locations(args.torrent)
+            print(f"✓ Downloaded at {len(locations)} location(s):")
+            for loc in locations:
+                print(f"  - {loc}")
+        else:
+            print("✓ Downloaded")
+        sys.exit(0)
+    else:
+        print("✗ Not downloaded")
+        sys.exit(1)
+
+
+def cmd_locate(args: argparse.Namespace) -> None:
+    """Find where torrent data is stored."""
+    scanner = _get_scanner(args)
+    locations = scanner.get_data_locations(args.torrent)
+    
+    if not locations:
+        print("Not found", file=sys.stderr)
+        sys.exit(1)
+    
+    if args.format == "json":
+        print(json.dumps([str(p) for p in locations], indent=2))
+    else:
+        for loc in locations:
+            print(loc)
+
+
+def cmd_identify(args: argparse.Namespace) -> None:
+    """Identify which torrent a file/folder belongs to."""
+    scanner = _get_scanner(args)
+    
+    with database_session(scanner.db_path):
+        from .models import get_torrent_for_data_path
+        torrent_info = get_torrent_for_data_path(args.path)
+    
+    if not torrent_info:
+        if args.format != "simple":
+            print("null")
+        else:
+            print("No torrent found for this path", file=sys.stderr)
+        sys.exit(1)
+    
+    if args.format == "json":
+        print(json.dumps(torrent_info, indent=2))
+    else:
+        print(f"Info Hash: {torrent_info['info_hash']}")
+        print(f"Name: {torrent_info['name']}")
+        print(f"Torrent Path: {torrent_info['torrent_path']}")
+
+
+# --- List Commands ---
+
+def cmd_list(args: argparse.Namespace) -> None:
+    """List torrents in database."""
+    scanner = _get_scanner(args)
+    torrents = scanner.list_torrents(filter_type=args.filter)
+    
+    if args.format == "table":
+        if args.filter == "matched":
+            headers = ["Info Hash", "Matches", "Name", "Path"]
+            widths = [40, 8, 42, 50]
+        else:
+            headers = ["Info Hash", "Name", "Path"]
+            widths = [40, 50, 50]
+        _print_table(torrents, headers, widths)
+    elif args.format == "json":
+        output = json.dumps(torrents, indent=2)
+        _write_output(output, args.output)
+    elif args.format == "jsonl":
+        output = "\n".join(json.dumps(t) for t in torrents)
+        _write_output(output, args.output)
+    elif args.format == "info-hash":
+        output = "\n".join(t['info_hash'] for t in torrents)
+        _write_output(output, args.output)
+
+
+# --- Database Commands ---
+
+def cmd_stats(args: argparse.Namespace) -> None:
+    """Show database statistics."""
+    scanner = _get_scanner(args)
+    stats = scanner.get_statistics()
+    
+    if args.json:
+        print(json.dumps(stats, indent=2))
+    else:
+        print(f"Torrent Scanner Database Statistics:")
+        print(f"  Database path: {scanner.db_path}")
+        print(f"  Total torrents: {stats['total_torrents']}")
+        print(f"  Matched torrents: {stats['matched_torrents']}")
+        print(f"  Unmatched torrents: {stats['unmatched_torrents']}")
+        print(f"  Total matches: {stats['total_matches']}")
+        print(f"  Single-file torrents: {stats['single_file_torrents']}")
+        print(f"  Multi-file torrents: {stats['multi_file_torrents']}")
+        
+        # Format size in human-readable format
+        size_bytes = stats['total_size_bytes']
+        if size_bytes >= 1024**4:
+            size_str = f"{size_bytes / (1024**4):.1f} TB"
+        elif size_bytes >= 1024**3:
+            size_str = f"{size_bytes / (1024**3):.1f} GB"
+        elif size_bytes >= 1024**2:
+            size_str = f"{size_bytes / (1024**2):.1f} MB"
+        elif size_bytes >= 1024:
+            size_str = f"{size_bytes / 1024:.1f} KB"
+        else:
+            size_str = f"{size_bytes} bytes"
+        
+        print(f"  Total size: {size_str}")
+
+
+def cmd_export(args: argparse.Namespace) -> None:
+    """Export database contents."""
+    scanner = _get_scanner(args)
+    
+    if args.matches_only:
+        data = scanner.export_matches()
+    else:
+        data = scanner.list_torrents("all")
+    
+    if args.format == "json":
+        content = json.dumps(data, indent=2)
+    elif args.format == "jsonl":
+        content = "\n".join(json.dumps(item) for item in data)
+    elif args.format == "csv":
+        import io
+        output = io.StringIO()
+        if data:
+            writer = csv.DictWriter(output, fieldnames=data[0].keys())
+            writer.writeheader()
+            writer.writerows(data)
+        content = output.getvalue()
+    
+    with Path(args.output).open('w', encoding='utf-8') as f:
+        f.write(content)
+    
+    print(f"Exported {len(data)} items to {args.output}")
+
+
+def cmd_reset(args: argparse.Namespace) -> None:
+    """Reset database."""
+    scanner = _get_scanner(args)
+    
+    if not args.confirm:
+        response = input(f"Reset database at {scanner.db_path}? [y/N]: ")
+        if response.lower() not in ('y', 'yes'):
+            print("Cancelled")
+            return
+    
+    with database_session(scanner.db_path):
+        clean_database()
+    
+    print(f"Database {scanner.db_path} has been reset")
+    
+    if scanner.redis_path.exists():
+        scanner.redis_path.unlink()
+        print(f"Redis database {scanner.redis_path} has been deleted")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    """Build the command line argument parser."""
-    p = argparse.ArgumentParser(description="Index .torrent files and match folders/files.")
-    sub = p.add_subparsers(dest="cmd", required=True)
-
-    p_scan = sub.add_parser("scan", help="Scan directories for .torrent files and matching data")
-    p_scan.add_argument("directories", nargs="+", help="Directories to scan recursively for .torrent files and data")
-    p_scan.add_argument("--db", help="SQLite database path (default: ~/.torrent_scanner/torrents.db)")
-    p_scan.add_argument("--redis", help="Redis database path (default: ~/.torrent_scanner/redis.db)")
-    p_scan.add_argument("--matches-jsonl", help="Write matched torrents to JSONL file")
-    p_scan.add_argument("-q", "--quiet", action="store_true", help="Suppress progress output")
-    p_scan.set_defaults(func=cmd_scan)
-
-    p_torrents = sub.add_parser("torrents", help="Scan directories for .torrent files only (no data matching)")
-    p_torrents.add_argument("directories", nargs="+", help="Directories to scan recursively for .torrent files")
-    p_torrents.add_argument("--db", help="SQLite database path (default: ~/.torrent_scanner/torrents.db)")
-    p_torrents.add_argument("--redis", help="Redis database path (default: ~/.torrent_scanner/redis.db)")
-    p_torrents.add_argument("-q", "--quiet", action="store_true", help="Suppress progress output")
-    p_torrents.set_defaults(func=cmd_torrents)
-
-    p_files = sub.add_parser("files", help="Scan directories for data files that match existing torrents")
-    p_files.add_argument("directories", nargs="+", help="Directories to scan recursively for data files")
-    p_files.add_argument("--db", help="SQLite database path (default: ~/.torrent_scanner/torrents.db)")
-    p_files.add_argument("--redis", help="Redis database path (default: ~/.torrent_scanner/redis.db)")
-    p_files.add_argument("--matches-jsonl", help="Write matched torrents to JSONL file")
-    p_files.add_argument("-q", "--quiet", action="store_true", help="Suppress progress output")
-    p_files.set_defaults(func=cmd_files)
-
-    p_list = sub.add_parser("list-matches", help="List matched torrents as JSONL")
-    p_list.add_argument("--db", help="SQLite database path (default: ~/.torrent_scanner/torrents.db)")
-    p_list.add_argument("--jsonl", help="Write output to JSONL file instead of stdout")
-    p_list.set_defaults(func=cmd_list_matches)
-
-    p_info = sub.add_parser("info", help="Show database statistics and information")
-    p_info.add_argument("--db", help="SQLite database path (default: ~/.torrent_scanner/torrents.db)")
-    p_info.add_argument("--json", action="store_true", help="Output information as JSON")
-    p_info.set_defaults(func=cmd_info)
-
-    p_clean = sub.add_parser("clean", help="Reset the database by removing all torrents and matches")
-    p_clean.add_argument("--db", help="SQLite database path (default: ~/.torrent_scanner/torrents.db)")
-    p_clean.add_argument("--redis", help="Redis database path (default: ~/.torrent_scanner/redis.db)")
-    p_clean.set_defaults(func=cmd_clean)
-
-    p_unmatched = sub.add_parser("list-unmatched", help="List torrents with no data matches")
-    p_unmatched.add_argument("--db", help="SQLite database path (default: ~/.torrent_scanner/torrents.db)")
-    p_unmatched.add_argument("--format", choices=['table', 'json', 'jsonl', 'paths'], 
-                            default='table', help="Output format")
-    p_unmatched.set_defaults(func=cmd_list_unmatched)
+    """Build improved command line argument parser."""
+    p = argparse.ArgumentParser(
+        description="Index .torrent files and match with downloaded data.",
+        epilog="Use 'torrent_scanner <command> --help' for command-specific help."
+    )
     
-    p_matched = sub.add_parser("list-matched", help="List torrents with data matches")
-    p_matched.add_argument("--db", help="SQLite database path (default: ~/.torrent_scanner/torrents.db)")
-    p_matched.add_argument("--format", choices=['table', 'json', 'jsonl', 'paths'], 
-                          default='table', help="Output format")
-    p_matched.set_defaults(func=cmd_list_matched)
+    # Global options
+    p.add_argument("--db", help="Database path (default: ~/.torrent_scanner/torrents.db)")
+    p.add_argument("--redis", help="Redis path (default: ~/.torrent_scanner/redis.db)")
     
-    p_get_data = sub.add_parser("get-data", help="Get data paths for a torrent")
-    p_get_data.add_argument("torrent", help="Info hash (40 hex chars) or torrent file path")
-    p_get_data.add_argument("--db", help="SQLite database path (default: ~/.torrent_scanner/torrents.db)")
-    p_get_data.add_argument("--format", choices=['lines', 'json'], default='lines', 
-                           help="Output format")
-    p_get_data.add_argument("-q", "--quiet", action="store_true", 
-                           help="Suppress 'not found' messages")
-    p_get_data.set_defaults(func=cmd_get_data)
+    sub = p.add_subparsers(dest="cmd", required=True, help="Commands")
     
-    p_get_torrent = sub.add_parser("get-torrent", help="Get torrent info for a data path")
-    p_get_torrent.add_argument("data_path", help="Path to data directory or file")
-    p_get_torrent.add_argument("--db", help="SQLite database path (default: ~/.torrent_scanner/torrents.db)")
-    p_get_torrent.add_argument("--format", choices=['full', 'json', 'info-hash', 'path'], 
-                              default='full', help="Output format")
-    p_get_torrent.add_argument("-q", "--quiet", action="store_true", 
-                              help="Suppress 'not found' messages")
-    p_get_torrent.set_defaults(func=cmd_get_torrent)
+    # --- Indexing Commands ---
     
-    p_export = sub.add_parser("export-matches", help="Export all matches as JSON dictionary")
-    p_export.add_argument("--db", help="SQLite database path (default: ~/.torrent_scanner/torrents.db)")
-    p_export.add_argument("-o", "--output", help="Output file path (default: stdout)")
-    p_export.set_defaults(func=cmd_export_matches)
-
+    # Index torrents
+    p_index = sub.add_parser(
+        "index",
+        help="Index torrent files into database",
+        description="Scan directories for .torrent files and add them to the database."
+    )
+    p_index.add_argument("paths", nargs="+", help="Paths to scan for .torrent files")
+    p_index.add_argument("-q", "--quiet", action="store_true", help="Suppress progress")
+    p_index.set_defaults(func=cmd_index)
+    
+    # Match data
+    p_match = sub.add_parser(
+        "match",
+        help="Find downloaded data for indexed torrents",
+        description="Scan directories to find data that matches indexed torrents."
+    )
+    p_match.add_argument("paths", nargs="+", help="Paths to scan for data")
+    p_match.add_argument("-o", "--output", help="Export matches to JSON/JSONL file")
+    p_match.add_argument("-q", "--quiet", action="store_true", help="Suppress progress")
+    p_match.set_defaults(func=cmd_match)
+    
+    # Full scan (index + match)
+    p_update = sub.add_parser(
+        "update",
+        help="Update database with torrents and matches",
+        description="Perform full scan: index .torrent files and find matching data."
+    )
+    p_update.add_argument("paths", nargs="+", help="Paths to scan")
+    p_update.add_argument("-o", "--output", help="Export matches to JSON/JSONL file")
+    p_update.add_argument("-q", "--quiet", action="store_true", help="Suppress progress")
+    p_update.set_defaults(func=cmd_update)
+    
+    # --- Query Commands ---
+    
+    # Check torrent status
+    p_check = sub.add_parser(
+        "check",
+        help="Check if torrent is downloaded",
+        description="Check download status of a torrent by info_hash or .torrent file."
+    )
+    p_check.add_argument("torrent", help="Info hash (40 hex) or path to .torrent file")
+    p_check.add_argument("-v", "--verbose", action="store_true", help="Show details")
+    p_check.set_defaults(func=cmd_check)
+    
+    # Locate data
+    p_locate = sub.add_parser(
+        "locate",
+        help="Find where torrent data is stored",
+        description="Get filesystem paths where torrent data is located."
+    )
+    p_locate.add_argument("torrent", help="Info hash (40 hex) or path to .torrent file")
+    p_locate.add_argument("-f", "--format", choices=["lines", "json"], default="lines")
+    p_locate.set_defaults(func=cmd_locate)
+    
+    # Identify data
+    p_identify = sub.add_parser(
+        "identify",
+        help="Identify which torrent a file/folder belongs to",
+        description="Find torrent information for a given data path."
+    )
+    p_identify.add_argument("path", help="Path to data file or directory")
+    p_identify.add_argument("-f", "--format", choices=["simple", "json"], default="simple")
+    p_identify.set_defaults(func=cmd_identify)
+    
+    # --- List Commands ---
+    
+    p_list = sub.add_parser(
+        "list",
+        help="List torrents in database",
+        description="List torrents with various filters."
+    )
+    p_list.add_argument(
+        "--filter",
+        choices=["all", "matched", "unmatched"],
+        default="all",
+        help="Filter torrents to list"
+    )
+    p_list.add_argument(
+        "--format",
+        choices=["table", "json", "jsonl", "info-hash"],
+        default="table",
+        help="Output format"
+    )
+    p_list.add_argument("-o", "--output", help="Output file (default: stdout)")
+    p_list.set_defaults(func=cmd_list)
+    
+    # --- Database Commands ---
+    
+    # Statistics
+    p_stats = sub.add_parser(
+        "stats",
+        help="Show database statistics",
+        description="Display statistics about indexed torrents and matches."
+    )
+    p_stats.add_argument("--json", action="store_true", help="Output as JSON")
+    p_stats.set_defaults(func=cmd_stats)
+    
+    # Export
+    p_export = sub.add_parser(
+        "export",
+        help="Export database contents",
+        description="Export torrents and matches in various formats."
+    )
+    p_export.add_argument(
+        "--format",
+        choices=["json", "jsonl", "csv"],
+        default="json",
+        help="Export format"
+    )
+    p_export.add_argument("-o", "--output", required=True, help="Output file")
+    p_export.add_argument("--matches-only", action="store_true", help="Export only matched torrents")
+    p_export.set_defaults(func=cmd_export)
+    
+    # Clean
+    p_reset = sub.add_parser(
+        "reset",
+        help="Reset database",
+        description="Remove all torrents and matches from database."
+    )
+    p_reset.add_argument("--confirm", action="store_true", help="Skip confirmation prompt")
+    p_reset.set_defaults(func=cmd_reset)
+    
     return p
 
 
