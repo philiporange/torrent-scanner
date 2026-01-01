@@ -219,22 +219,6 @@ All commands support these global options:
 - `--db PATH` - Database path (default: `~/.torrent_scanner/torrents.db`)
 - `--redis PATH` - Redis path (default: `~/.torrent_scanner/redis.db`)
 
-## Migration from Old Commands
-
-If you're migrating from the previous CLI structure:
-
-| Old Command | New Command | Notes |
-|-------------|------------|-------|
-| `scan` | `update` | Full scan (torrents + data) |
-| `torrents` | `index` | Index .torrent files only |
-| `files` | `match` | Find matching data only |
-| `list-matches` | `list --filter matched` | List matched torrents |
-| `list-unmatched` | `list --filter unmatched` | List unmatched torrents |
-| `get-data` | `locate` | Find data locations |
-| `get-torrent` | `identify` | Identify torrent from data |
-| `info` | `stats` | Show statistics |
-| `clean` | `reset` | Clear database |
-
 ## How It Works
 
 The scanner operates in three phases:
@@ -335,9 +319,3 @@ Run specific test file:
 python -m pytest tests/test_new_api.py -v
 ```
 
-## Limitations
-
-- Matching is metadata-based (names, sizes, structure) and does not verify torrent piece hashes
-- Symlinks are skipped during scanning; permission errors are ignored  
-- Only `.torrent` files are supported; magnet URIs are not supported
-- File-based matching works best when torrents have unique file structures
