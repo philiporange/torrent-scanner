@@ -1,23 +1,22 @@
 {
   "name": "torrent_scanner",
-  "short_description": "Fast utility to index .torrent files and match them against on-disk folders/files with SQLite storage.",
-  "long_description": "torrent_scanner is a local utility that indexes BitTorrent .torrent files and intelligently matches them against data on disk. It provides both a high-level Python API for library integration and a comprehensive command-line interface. The tool uses bencode parsing to extract torrent metadata, stores data in SQLite with Peewee ORM, and leverages embedded Redis (redislite) for fast lookups. It supports matching both single-file and multi-file torrents through name-based and structure-based hashing, handles permission errors gracefully, and skips symlinks during scanning. Multiple export formats (JSON, JSONL, CSV) are available for integration with other tools.",
+  "short_description": "Fast utility to index .torrent files and match them against on-disk folders and files with database persistence.",
+  "long_description": "torrent_scanner is a comprehensive utility for managing torrent metadata and matching it against downloaded data on disk. It provides both a high-level Python API and a command-line interface for indexing .torrent files, finding corresponding downloaded data, and querying torrent information. The system uses BEP-3 compliant bencode parsing with SHA-1 info hash computation, stores metadata in SQLite via Peewee ORM, and employs Redis (via redislite) for fast lookups. It intelligently handles both single-file and multi-file torrents, supports multiple export formats (JSON, JSONL, CSV), and safely skips symlinks while gracefully handling permission errors during filesystem scanning.",
   "keywords": [
     "torrent",
     "bittorrent",
-    "scanner",
-    "bencode",
-    "indexing",
     "file-matching",
+    "metadata-indexing",
+    "bencode",
+    "sha1-hash",
     "sqlite",
-    "peewee",
     "redis",
-    "redislite",
-    "metadata-extraction",
+    "peewee",
     "cli-tool",
-    "library",
-    "python-api",
-    "database"
+    "python-library",
+    "scanner",
+    "database",
+    "p2p"
   ],
   "primary_language": "Python",
   "languages": [
@@ -25,56 +24,44 @@
   ],
   "frameworks": [
     "Peewee",
-    "redislite",
-    "argparse",
-    "tqdm"
+    "Click/Argparse"
   ],
   "modules": [
     {
+      "path": "torrent_scanner/__init__.py",
+      "description": "Package initialization and public API exports including TorrentScanner class, convenience functions, and database models."
+    },
+    {
       "path": "torrent_scanner/api.py",
-      "description": "High-level public API providing the TorrentScanner class and convenience functions (quick_check, quick_locate, quick_identify) for library use."
-    },
-    {
-      "path": "torrent_scanner/cli.py",
-      "description": "Command-line interface with organized commands for indexing, matching, querying, and managing torrent metadata with multiple output formats."
-    },
-    {
-      "path": "torrent_scanner/scanner.py",
-      "description": "Core scanning orchestration logic that uses Redis for fast lookups and supports both file-based and structure-based torrent matching."
-    },
-    {
-      "path": "torrent_scanner/torrent.py",
-      "description": "Torrent file parsing and metadata extraction implementing BEP-3 torrent format with SHA-1 info hash computation."
+      "description": "High-level public API providing the TorrentScanner class with methods for indexing torrents, finding matches, querying info, and convenience functions for quick operations."
     },
     {
       "path": "torrent_scanner/bencode.py",
-      "description": "Minimal bencode decoder with offset tracking for parsing BEP-3 torrent files and extracting the info dictionary span."
+      "description": "Minimal BEP-3 compliant bencode decoder with offset tracking for extracting torrent file info dictionaries and computing canonical SHA-1 hashes."
+    },
+    {
+      "path": "torrent_scanner/torrent.py",
+      "description": "Torrent file parsing and metadata extraction implementing BEP-3 format parsing with proper handling of multi-file torrents and file hashing."
+    },
+    {
+      "path": "torrent_scanner/scanner.py",
+      "description": "Core scanning orchestration logic that indexes torrents into Redis for fast lookups and matches indexed torrents against on-disk data using both name and file-based matching."
     },
     {
       "path": "torrent_scanner/models.py",
-      "description": "Database models using Peewee ORM defining Torrent, TorrentFile, and Match tables with indexes for efficient querying."
+      "description": "Peewee ORM database models for Torrent, TorrentFile, and Match entities with indexes and query functions for efficient database operations."
     },
     {
       "path": "torrent_scanner/filesystem.py",
-      "description": "Filesystem utilities for discovering .torrent files, computing structure hashes for directories, and computing file hashes."
+      "description": "Filesystem utilities for discovering .torrent files, computing structure hashes for directories, and computing hashes for individual files to enable matching."
     },
     {
-      "path": "torrent_scanner/__init__.py",
-      "description": "Package initialization exporting the public API including TorrentScanner class, models, parsing functions, and CLI entry point."
+      "path": "torrent_scanner/cli.py",
+      "description": "Command-line interface with organized command groups including indexing, querying, listing, and database management with support for multiple output formats."
+    },
+    {
+      "path": "torrent_scanner.py",
+      "description": "Entry script for running torrent_scanner as a module or executable."
     }
-  ],
-  "git": {
-    "is_repo": true,
-    "remote_url": "https://github.com/philiporange/torrent-scanner.git",
-    "github_name": "philiporange/torrent-scanner",
-    "default_branch": "master",
-    "last_commit": "2025-08-29T09:56:39+01:00"
-  },
-  "stats": {
-    "files": 27,
-    "lines_of_code": 4378,
-    "size_bytes": 343078
-  },
-  "generated_at": "2025-12-06T20:03:58.477101",
-  "generator_version": "1.0.0"
+  ]
 }
